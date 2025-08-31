@@ -20,9 +20,6 @@ export class User extends BaseService {
         return '数据库服务未初始化';
       }
 
-      // 检查并创建users表
-      await this.ensureUsersTable(db, logger);
-
       logger.info('用户服务初始化成功');
       return null;
     } catch (error) {
@@ -31,69 +28,20 @@ export class User extends BaseService {
   }
 
   /**
-   * 确保users表存在
-   * @param {Object} db - 数据库实例
-   * @param {Object} logger - 日志实例
-   */
-  async ensureUsersTable(db, logger) {
-    const tableExists = await db.tableExists(this.tableName);
-
-    if (!tableExists) {
-      logger.info('创建users表');
-
-      const createTableSQL = `
-        CREATE TABLE users (
-          uid SERIAL PRIMARY KEY,
-          email TEXT UNIQUE NOT NULL,
-          pass TEXT NOT NULL,
-          "from" INTEGER DEFAULT 0,
-          info JSONB DEFAULT '{}',
-          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          status INTEGER DEFAULT 1
-        );
-        
-        -- 创建索引
-        CREATE INDEX idx_users_email ON users(email);
-        CREATE INDEX idx_users_status ON users(status);
-        CREATE INDEX idx_users_from ON users("from");
-        CREATE INDEX idx_users_created_at ON users(created_at);
-        
-        -- 创建更新时间触发器
-        CREATE OR REPLACE FUNCTION update_updated_at_column()
-        RETURNS TRIGGER AS $$
-        BEGIN
-          NEW.updated_at = CURRENT_TIMESTAMP;
-          RETURN NEW;
-        END;
-        $$ language 'plpgsql';
-        
-        CREATE TRIGGER update_users_updated_at
-          BEFORE UPDATE ON users
-          FOR EACH ROW
-          EXECUTE FUNCTION update_updated_at_column();
-      `;
-
-      await db.migrate(createTableSQL);
-      logger.info('users表创建成功');
-    }
-  }
-
-  /**
    * 密码加密
    * @param {string} password - 原始密码
-   * @param {string} salt - 盐值（可选）
+   * @param {string} OTT - 盐值（可选）
    * @returns {Object} 包含加密密码和盐值的对象
    */
-  hashPassword(password, salt = null) {
-    if (!salt) {
-      salt = crypto.randomBytes(16).toString('hex');
+  hashPassword(password, OTT = null) {
+    if (!OTT) {
+      OTT = crypto.randomBytes(16).toString('hex');
     }
 
-    const hash = crypto.pbkdf2Sync(password, salt, 10000, 64, 'sha512').toString('hex');
+    const hash = crypto.pbkdf2Sync(password, OTT, 10000, 64, 'sha512').toString('hex');
     return {
-      hash: `${salt}:${hash}`,
-      salt
+      hash: `${OTT}:${hash}`,
+      OTT
     };
   }
 
@@ -105,8 +53,8 @@ export class User extends BaseService {
    */
   verifyPassword(password, hashedPassword) {
     try {
-      const [salt, hash] = hashedPassword.split(':');
-      const verifyHash = crypto.pbkdf2Sync(password, salt, 10000, 64, 'sha512').toString('hex');
+      const [OTT, hash] = hashedPassword.split(':');
+      const verifyHash = crypto.pbkdf2Sync(password, OTT, 10000, 64, 'sha512').toString('hex');
       return hash === verifyHash;
     } catch (error) {
       this.gl.logger.error('密码验证失败', { error: error.message });
@@ -133,17 +81,17 @@ export class User extends BaseService {
 
   /**
    * 获取第三方应用名称
-   * @param {number} from - 第三方应用ID
+   * @param {number} frm - 第三方应用ID
    * @returns {string} 应用名称
    */
-  getFromName(from) {
+  getFromName(frm) {
     const fromMap = {
       1: 'Magic Link',
       2: 'Google',
       3: 'Maxthon'
     };
 
-    return fromMap[from] || `Unknown(${from})`;
+    return fromMap[frm] || `Unknown(${frm})`;
   }
 
   /**
@@ -151,28 +99,27 @@ export class User extends BaseService {
    * @param {Object} userData - 用户数据
    * @returns {Promise<Object>} 创建的用户信息（不包含密码）
    */
-  async createUser(userData) {
-    const { email, password, from = 0, info = {}, status = 1 } = userData;
-
+  async createUser({ email, password, frm = 0, info = {}, status = 1 }) {
+    const { db, logger } = this.gl
     if (!email) {
       throw new Error('邮箱不能为空');
     }
 
     // 如果有from参数但没有password，生成随机密码
     let finalPassword = password;
-    if (from && from > 0 && !password) {
+    if (frm && frm > 0 && !password) {
       finalPassword = this.generateRandomPassword();
       this.gl.logger.info('为第三方用户生成随机密码', {
         email,
-        from,
-        fromName: this.getFromName(from)
+        frm,
+        fromName: this.getFromName(frm)
       });
     } else if (!password) {
       throw new Error('密码不能为空');
     }
 
     // 检查邮箱是否已存在
-    const existingUser = await this.gl.db.findOne(
+    const existingUser = await db.findOne(
       'SELECT uid FROM users WHERE email = $1',
       [email]
     );
@@ -185,18 +132,18 @@ export class User extends BaseService {
     const { hash } = this.hashPassword(finalPassword);
 
     // 插入用户
-    const newUser = await this.gl.db.insert('users', {
+    const newUser = await db.insert('users', {
       email,
       pass: hash,
-      from,
+      frm,
       info: JSON.stringify(info),
       status
     });
 
-    this.gl.logger.info('用户创建成功', {
+    logger.info('用户创建成功', {
       uid: newUser.uid,
       email: newUser.email,
-      from: newUser.from
+      frm: newUser.frm
     });
 
     // 返回用户信息（不包含密码）
@@ -208,13 +155,20 @@ export class User extends BaseService {
    * 用户登录验证
    * @param {string} email - 邮箱
    * @param {string} password - 密码
+   * @param {string} OTT - one time login code
    * @returns {Promise<Object|null>} 用户信息或null
    */
-  async authenticateUser(email, password) {
-    if (!email || !password) {
+  async authenticateUser({ OTT, email, password }) {
+    if (!OTT && (!email || !password)) {
       throw new Error('邮箱和密码不能为空');
     }
-
+    let verifyPass = true
+    if (OTT) {
+      const { redis } = this.gl
+      email = await redis.$r.get(OTT)
+      await redis.$r.del(OTT)
+      verifyPass = false
+    }
     const user = await this.gl.db.findOne(
       'SELECT * FROM users WHERE email = $1 AND status = 1',
       [email]
@@ -224,52 +178,47 @@ export class User extends BaseService {
       this.gl.logger.warn('登录失败：用户不存在或已禁用', { email });
       return null;
     }
-
-    const isValidPassword = this.verifyPassword(password, user.pass);
-
-    if (!isValidPassword) {
-      this.gl.logger.warn('登录失败：密码错误', { email, uid: user.uid });
-      return null;
+    if (verifyPass) {
+      const isValidPassword = this.verifyPassword(password, user.pass);
+      if (!isValidPassword) {
+        this.gl.logger.warn('登录失败：密码错误', { email, uid: user.uid });
+        return null;
+      }
     }
-
     this.gl.logger.info('用户登录成功', {
       uid: user.uid,
       email: user.email
     });
-
     // 返回用户信息（不包含密码）
     const { pass, ...userInfo } = user;
     return userInfo;
   }
 
   /**
-   * 根据UID获取用户信息
-   * @param {number} uid - 用户ID
+   * 根据邮箱或UID获取用户信息
+   * @param {Object} params - 查询参数
+   * @param {string} params.email - 邮箱（可选）
+   * @param {number} params.uid - 用户ID（可选）
    * @returns {Promise<Object|null>} 用户信息或null
    */
-  async getUserById(uid) {
-    const user = await this.gl.db.findOne(
-      'SELECT uid, email, "from", info, created_at, updated_at, status FROM users WHERE uid = $1',
-      [uid]
-    );
+  async getUser({ email, uid }) {
+    if (!email && !uid) {
+      throw new Error('必须提供邮箱或用户ID');
+    }
 
+    let query, params;
+
+    if (uid) {
+      query = 'SELECT uid, email, frm, info, created_at, updated_at, status FROM users WHERE uid = $1';
+      params = [uid];
+    } else {
+      query = 'SELECT uid, email, frm, info, created_at, updated_at, status FROM users WHERE email = $1';
+      params = [email];
+    }
+
+    const user = await this.gl.db.findOne(query, params);
     return user;
   }
-
-  /**
-   * 根据邮箱获取用户信息
-   * @param {string} email - 邮箱
-   * @returns {Promise<Object|null>} 用户信息或null
-   */
-  async getUserByEmail(email) {
-    const user = await this.gl.db.findOne(
-      'SELECT uid, email, "from", info, created_at, updated_at, status FROM users WHERE email = $1',
-      [email]
-    );
-
-    return user;
-  }
-
   /**
    * 更新用户信息
    * @param {number} uid - 用户ID
@@ -277,7 +226,7 @@ export class User extends BaseService {
    * @returns {Promise<Object>} 更新后的用户信息
    */
   async updateUser(uid, updateData) {
-    const allowedFields = ['email', 'from', 'info', 'status'];
+    const allowedFields = ['email', 'frm', 'info', 'status'];
     const updateFields = {};
 
     // 过滤允许更新的字段
@@ -321,6 +270,62 @@ export class User extends BaseService {
     // 返回用户信息（不包含密码）
     const { pass, ...userInfo } = updatedUser;
     return userInfo;
+  }
+
+  async getUserInfo(uid) {
+    const user = await this.getUser({ uid });
+    if (!user) {
+      return { err: "user-not-found" }
+    }
+    return user.info
+  }
+  /**
+   * 更新用户info属性下的子对象或属性
+   * @param {number} uid - 用户ID
+   * @param {Object} infoUpdates - 要更新的info子属性
+   * @returns {Promise<Object>} 更新后的用户信息
+   */
+  async updateUserInfo(uid, infoUpdates) {
+    if (!infoUpdates || typeof infoUpdates !== 'object') {
+      throw new Error('info更新数据必须是对象');
+    }
+
+    // 获取当前用户信息
+    const user = await this.getUser({ uid });
+    if (!user) {
+      return { code: 100, err: "no-user" }
+    }
+
+    // 解析当前的info字段
+    let currentInfo = {};
+    try {
+      currentInfo = typeof user.info === 'string' ? JSON.parse(user.info) : (user.info || {});
+    } catch (error) {
+      this.gl.logger.warn('解析用户info字段失败，使用空对象', { uid, error: error.message });
+      currentInfo = {};
+    }
+
+    // 合并更新的info属性
+    const updatedInfo = { ...currentInfo, ...infoUpdates };
+
+    // 更新用户info字段
+    const updatedUser = await this.gl.db.update('users',
+      { info: JSON.stringify(updatedInfo) },
+      { uid }
+    );
+
+    if (!updatedUser) {
+      return { code: 100, err: "update-info-failed" }
+    }
+
+    this.gl.logger.info('用户info更新成功', {
+      uid,
+      updatedFields: Object.keys(infoUpdates)
+    });
+
+    // 返回用户信息（不包含密码）
+    const { pass, ...userInfo } = updatedUser;
+    return { code: 0, info: userInfo };
   }
 
   /**
@@ -381,17 +386,52 @@ export class User extends BaseService {
   }
 
   /**
+   * 获取用户等级
+   * @param {number} uid - 用户ID
+   * @returns {Promise<number>} 用户等级，如果level_exp已过期则返回0
+   */
+  async getUserLevel(uid) {
+    if (!uid) {
+      throw new Error('用户ID不能为空');
+    }
+
+    // 查询用户的level和level_exp字段
+    const user = await this.gl.db.findOne(
+      'SELECT level, level_exp FROM users WHERE uid = $1',
+      [uid]
+    );
+
+    if (!user) {
+      throw new Error('用户不存在');
+    }
+    // 如果没有level字段或level_exp字段，返回0
+    if (!user.level || !user.level_exp) {
+      return 0;
+    }
+
+    // 检查level_exp是否小于当前时间
+    const currentTime = new Date();
+    const levelExpTime = new Date(user.level_exp);
+
+    if (levelExpTime < currentTime) {
+      // level_exp已过期，返回0
+      return 0;
+    }
+
+    // level_exp未过期，返回level值
+    return user.level || 0;
+  }
+
+  /**
    * 确保用户存在，如果不存在则创建用户
    * @param {Object} userData - 用户数据
    * @param {string} userData.email - 邮箱（可选，如果提供uid则可不提供）
    * @param {number} userData.uid - 用户ID（可选，如果提供email则可不提供）
-   * @param {string} userData.from - 第三方来源
+   * @param {string} userData.frm - 第三方来源
    * @param {Object} userData.info - 用户信息（可选）
    * @returns {Promise<Object>} 用户信息
    */
-  async ensureUser(userData) {
-    const { email, uid, from, info = {} } = userData;
-
+  async ensureUser({ email, uid, frm, info = {} }) {
     // 参数验证
     if (!email && !uid) {
       throw new Error('必须提供邮箱或用户ID');
@@ -400,18 +440,14 @@ export class User extends BaseService {
     let user = null;
 
     // 根据提供的参数查找用户
-    if (uid) {
-      user = await this.getUserById(uid);
-    } else if (email) {
-      user = await this.getUserByEmail(email);
-    }
+    user = await this.getUser({ email, uid });
 
     // 如果用户存在，返回用户信息
     if (user) {
       this.gl.logger.info('用户已存在', {
         uid: user.uid,
         email: user.email,
-        from: user.from
+        frm: user.frm
       });
       return user;
     }
@@ -421,67 +457,56 @@ export class User extends BaseService {
       throw new Error('创建用户时邮箱不能为空');
     }
 
-    // 创建用户数据
-    const createUserData = { email, from: from || 0, info };
-
     // 如果是第三方用户且没有密码，会自动生成随机密码
-    const newUser = await this.createUser(createUserData);
+    const newUser = await this.createUser({ email, frm: frm || 0, info });
 
-    this.gl.logger.info('用户创建成功', { uid: newUser.uid, email: newUser.email, from: newUser.from, fromName: this.getFromName(newUser.from) });
+    this.gl.logger.info('用户创建成功', { uid: newUser.uid, email: newUser.email, frm: newUser.frm, fromName: this.getFromName(newUser.frm) });
 
     return newUser;
   }
 
-  /**
-   * 获取用户列表
-   * @param {Object} options - 查询选项
-   * @returns {Promise<Object>} 用户列表和分页信息
-   */
-  async getUserList(options = {}) {
-    const { page = 1, limit = 20, status = null, from = null, search = null } = options;
-    const offset = (page - 1) * limit;
-    let whereClause = 'WHERE 1=1';
-    const params = [];
-    let paramIndex = 1;
 
-    // 构建查询条件
-    if (status !== null) {
-      whereClause += ` AND status = $${paramIndex}`;
-      params.push(status);
-      paramIndex++;
+  async handleLoginSuccessful_fromCommonAPI({ OTT, ...rest }) {
+    const { redis } = this.gl
+    console.log("handleLoginSuccessful_fromCommonAPI", OTT, rest)
+    if (!OTT) return { code: 100, err: "no-ott" }
+    const { type, email, picture, avatar_url } = rest
+    if (type === 'google') {
+      await this.ensureUser({ email, frm: 1, info: { avatar: picture } })
     }
-    if (from !== null) {
-      whereClause += ` AND "from" = $${paramIndex}`;
-      params.push(from);
-      paramIndex++;
+    if (type === 'maxthon') {
+      if (!email) email = 'non-exist@non-exist.ooo'
+      await this.ensureUser({ email, frm: 2, info: { avatar: avatar_url } })
     }
-    if (search) {
-      whereClause += ` AND email ILIKE $${paramIndex}`;
-      params.push(`%${search}%`);
-      paramIndex++;
+    if (type === 'email') {
+      await this.ensureUser({ email, frm: 3, info: {} })
     }
-    // 查询总数
-    const countSQL = `SELECT COUNT(*) as total FROM users ${whereClause}`;
-    const countResult = await this.gl.db.findOne(countSQL, params);
-    const total = parseInt(countResult.total);
-
-    // 查询用户列表
-    const listSQL = `
-      SELECT uid, email, "from", info, created_at, updated_at, status 
-      FROM users 
-      ${whereClause} 
-      ORDER BY created_at DESC 
-      LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
-    `;
-
-    const users = await this.gl.db.findMany(listSQL, [...params, limit, offset]);
-
-    return { users, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } };
+    redis.$r.set(OTT, email, 'EX', 60 * 5)
+    return { msg: "ok" }
   }
-  async handleLoginSuccessful_fromCommonAPI({ salt, ...rest }) {
-    const { redis } = gl
-    redis.$r.set(salt, JSON.stringify(rest), { EX: 60 * 5 })
+  async handleOrderPaid_fromCommonAPI(meta) {
+    const { db } = this.gl
+    const { uid, type, amount, id: order_id } = meta
+    await db.insert('payments', { uid, type, amount, order_id, meta })
+    if (type === 1) return { msg: "ok" }
+    if (!uid) return { err: "no-uid" }
+    return await this.updateUserInfo(uid, { pay: meta })
   }
+
+  async getPlan({ user, uid }) {
+    if (!user) user = await this.getUser({ uid })
+    if (!user?.info?.pay) return "free"
+    const { name, endTime } = user?.info?.pay
+    if (endTime * 1000 < Date.now()) return 'free'
+    if (name === 'Plus Plan Monthly' || name === 'Plus Plan Yearly') {
+      return 'plus'
+    }
+    if (name === 'Ultra Plan Monthly' || name === 'Ultra Plan Yearly') {
+      return 'ultra'
+    }
+    return 'free'
+  }
+
 
   /**
    * 注册用户管理相关的API端点
@@ -489,108 +514,182 @@ export class User extends BaseService {
    */
   async regEndpoints(app) {
     // 用户注册
-    app.post('/users/register', async (req, res) => {
+    app.post('/user/register', async (req, res) => {
       try {
-        const { email, password, from, info } = req.body;
-        const user = await this.createUser({ email, password, from, info });
+        const { email, password, frm, info } = req.body;
+        const user = await this.createUser({ email, password, frm, info });
 
-        return { code: 0, result: user };
+        return { result: user };
       } catch (error) {
         this.gl.logger.error('用户注册失败', { error: error.message, body: req.body });
-        return { code: 100, err: error.message };
+        return { err: 'internal-server-error' };
       }
     });
 
     // 用户登录
-    app.post('/users/login', async (req, res) => {
+    app.post('/user/login', async (req, res) => {
       try {
-        const { email, password } = req.body;
-        const user = await this.authenticateUser(email, password);
+        const { util } = this.gl
+        const { OTT, email, password } = req.body;
+        const user = await this.authenticateUser({ OTT, email, password });
 
         if (!user) {
-          return { code: 100, err: '邮箱或密码错误' };
+          return { err: 'invalid-email-or-password' };
         }
-        return { code: 0, result: user };
+        const token = await util.uidToToken({ uid: user.uid, create: Date.now(), expire: Date.now() + 3600 * 24 * 30 })
+        util.setCookie({ req, res, name: `${process.env.APP_NAME}_ut`, value: token, days: 30, secure: true })
+
+        return { result: user };
       } catch (error) {
         this.gl.logger.error('用户登录失败', { error: error.message });
-        return { code: 100, err: error.message };
+        return { err: 'internal-server-error' };
       }
     });
-
+    app.get('/user/verifyCode', async (req, res) => {
+      const { util, mail } = this.gl
+      const { email, code } = req.query
+      const result = await mail.verifyEmailCode({ email, code })
+      if (result.code === 0) {
+        const user = await this.ensureUser({ email, frm: 3 })
+        const token = await util.uidToToken({ uid: user.uid, create: Date.now(), expire: Date.now() + 3600 * 24 * 30 })
+        util.setCookie({ req, res, name: `${process.env.APP_NAME}_ut`, value: token, days: 30, secure: true })
+        return { result: user };
+      }
+      return { err: 'invalid-code' }
+    })
     // 获取用户信息
-    app.get('/users/:uid', async (req, res) => {
+    app.get('/user/info', async (req, res) => {
       try {
-        const { uid } = req.params;
-        const user = await this.getUserById(parseInt(uid));
-        return user ? { code: 0, result: user } : { code: 100, err: '用户不存在' };
+        const uid = req.uid;
+        if (!uid) {
+          return { err: 'user-not-login' };
+        }
+        const { storage } = req.query
+        const user = await this.getUser({ uid });
+        user.plan = await this.getPlan({ user })
+        if (storage) {
+          user.storage = await this.getStorage({ uid })
+        }
+        return user ? { result: user } : { err: 'user-not-found' };
       } catch (error) {
-        this.gl.logger.error('获取用户信息失败', { error: error.message, uid: req.params.uid });
-        return { code: 100, err: '服务器错误' };
+        this.gl.logger.error('获取用户信息失败', { error: error.message, uid: req.uid });
+        return { err: 'internal-server-error' };
       }
     });
 
     // 更新用户信息
-    app.post('/users/:uid/update', async (req, res) => {
+    app.post('/user/update', async (req, res) => {
       try {
-        const { uid } = req.params;
+        const uid = req.uid;
+        if (!uid) {
+          return { err: 'user-not-login' };
+        }
+
         const updateData = req.body;
+        const user = await this.updateUser(uid, updateData);
 
-        const user = await this.updateUser(parseInt(uid), updateData);
-
-        return { code: 0, result: user };
+        return { result: user };
       } catch (error) {
-        this.gl.logger.error('更新用户信息失败', { error: error.message, uid: req.params.uid });
-        return { code: 100, err: error.message };
+        this.gl.logger.error('更新用户信息失败', { error: error.message, uid: req.uid });
+        return { err: 'internal-server-error' };
       }
     });
 
     // 更新用户密码
-    app.post('/users/:uid/password', async (req, res) => {
+    app.post('/user/password', async (req, res) => {
       try {
-        const { uid } = req.params;
+        const uid = req.uid;
+        if (!uid) {
+          return { err: 'user-not-login' };
+        }
+
         const { oldPassword, newPassword } = req.body;
+        await this.updatePassword(uid, oldPassword, newPassword);
 
-        await this.updatePassword(parseInt(uid), oldPassword, newPassword);
-
-        return { code: 0, result: { message: '密码更新成功' } };
+        return { result: '密码更新成功' };
       } catch (error) {
-        this.gl.logger.error('更新密码失败', { error: error.message, uid: req.params.uid });
-        return { code: 100, err: error.message };
+        this.gl.logger.error('更新密码失败', { error: error.message, uid: req.uid });
+        return { err: 'internal-server-error' };
+      }
+    });
+
+    // 更新用户info属性
+    app.post('/user/info/update', async (req, res) => {
+      try {
+        const uid = req.uid;
+        if (!uid) {
+          return { err: 'user-not-login' };
+        }
+
+        const infoUpdates = req.body;
+        const user = await this.updateUserInfo(uid, infoUpdates);
+
+        return { result: user };
+      } catch (error) {
+        this.gl.logger.error('更新用户info失败', { error: error.message, uid: req.uid });
+        return { err: 'internal-server-error' };
       }
     });
 
     // 删除用户
-    app.delete('/users/:uid', async (req, res) => {
+    app.delete('/user/delete', async (req, res) => {
       try {
-        const { uid } = req.params;
-        await this.deleteUser(parseInt(uid));
+        const uid = req.uid;
+        if (!uid) {
+          return { err: 'user-not-login' };
+        }
+        await this.deleteUser(uid);
 
-        return { code: 0, result: { message: '用户删除成功' } };
+        return { result: '用户删除成功' };
       } catch (error) {
-        this.gl.logger.error('删除用户失败', { error: error.message, uid: req.params.uid });
-        return { code: 100, err: error.message };
+        this.gl.logger.error('删除用户失败', { error: error.message, uid: req.uid });
+        return { err: 'internal-server-error' };
       }
     });
 
-    // 获取用户列表
-    app.get('/users', async (req, res) => {
+
+    // 获取其他用户信息（邮箱和头像）
+    app.get('/user/otherUserInfo', async (req, res) => {
       try {
-        const { page, limit, status, from, search } = req.query;
-        const result = await this.getUserList({
-          page: page ? parseInt(page) : undefined,
-          limit: limit ? parseInt(limit) : undefined,
-          status: status !== undefined ? parseInt(status) : null,
-          from: from !== undefined ? parseInt(from) : null,
-          search
+        const { uids } = req.query;
+        if (!uids) {
+          return { err: 'missing-uids-parameter' };
+        }
+
+        const { db } = this.gl;
+
+        // 解析用户ID字符串，支持逗号分隔的多个ID
+        const userIds = uids.toString().split(',').map(uid => uid.trim()).filter(uid => uid);
+
+        if (userIds.length === 0) {
+          return { err: 'invalid-uids-parameter' };
+        }
+
+        // 查询用户信息（只返回邮箱和头像）
+        const placeholders = userIds.map((_, index) => `$${index + 1}`).join(',');
+        const query = `
+          SELECT uid, email, info->>'avatar' as avatar
+          FROM users 
+          WHERE uid IN (${placeholders})
+        `;
+
+        const result = await db.query(query, userIds);
+
+        // 构建结果对象，以uid为key
+        const userInfoMap = {};
+        result.rows.forEach(row => {
+          userInfoMap[row.uid] = {
+            email: row.email,
+            avatar: row.avatar || null
+          };
         });
 
-        return { code: 0, result: result };
+        return { result: userInfoMap };
       } catch (error) {
-        this.gl.logger.error('获取用户列表失败', { error: error.message });
-        return { code: 100, err: '服务器错误' };
+        this.gl.logger.error('获取其他用户信息失败', { error: error.message, query: req.query });
+        return { err: 'internal-server-error' };
       }
     });
+
   }
 }
-
-export default User;
