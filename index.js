@@ -31,6 +31,10 @@ async function startServer() {
 }
 
 async function main() {
+    // 注册静态文件服务
+    const __filename = fileURLToPath(import.meta.url);
+    const __dirname = path.dirname(__filename);
+    gl.appPath = __dirname
     await regEndpoints()
     //create more classes here
     await Util.create(gl)
@@ -50,11 +54,9 @@ async function main() {
     process.on('SIGTERM', onExit);
 }
 async function regEndpoints() {
-    // 注册静态文件服务
-    const __filename = fileURLToPath(import.meta.url);
-    const __dirname = path.dirname(__filename);
+
     await app.register(fastifyStatic, {
-        root: path.join(__dirname, 'static'),
+        root: path.join(gl.appPath, 'static'),
         prefix: '/static/'
     });
 
