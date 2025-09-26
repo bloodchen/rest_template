@@ -81,9 +81,14 @@ async function regEndpoints() {
         const body = req.body
         console.log(body)
         const { cmd, result } = body
-        if (cmd === 'login_successful') {
+        const { event, data } = body
+        if (event === 'login_success') {
             const { user } = gl
-            await user.handleLoginSuccessful_fromCommonAPI(result)
+            await user.handleLoginSuccessful_fromCommonAPI(data)
+        }
+        if (event === 'order_paid') {
+            const { user } = gl
+            await user.handleOrderPaid_fromCommonAPI(data)
         }
         return "ok"
     })
