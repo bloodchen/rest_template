@@ -68,6 +68,10 @@ async function regEndpoints() {
     await app.register(cors, { origin: true, credentials: true, allowedHeaders: ['content-type'] });
     app.addHook("preHandler", async (req, res) => {
         console.log(req.url)
+        if (req.query._testuid) {
+            req.uid = Number(req.query._testuid)//req.query.uid
+            return
+        }
     })
     app.get('/', (req, res) => {
         console.log(req.url)
