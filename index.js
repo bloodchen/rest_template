@@ -2,6 +2,7 @@ import fastifyModule from 'fastify';
 import cors from '@fastify/cors'
 import fastifyStatic from '@fastify/static'
 import fasticookie from '@fastify/cookie'
+import axios from 'axios'
 
 import dotenv from "dotenv";
 import path from 'path';
@@ -22,6 +23,7 @@ const logger = new Logger({
 gl.logger = logger
 gl.app = app
 gl.config = Config
+gl.axios = axios
 async function onExit() {
     console.log("exiting...")
     process.exit(0);
@@ -99,6 +101,20 @@ async function regEndpoints() {
             await user.handleOrderPaid_fromCommonAPI(data)
         }
         return "ok"
+    })
+    app.get('/start/maxthon', async (req, res) => { //support auto login from maxthon
+        const { access_token } = req.query
+        const { user_id: uid, email } = (await axios.get(`https://api.maxthon.com/util/_getUserByAccessToken?access_token=${access_token}`))?.data
+        if (!uid) {
+            res.redirect('https://mail.uu.me/')
+            return
+        }
+        const user = await gl.user.ensureUser({ uid, email })
+        const key = await gl.util.uidToToken({ uid: user.uid, create: Date.now(), expire: Date.now() + 1000 * 3600 * 24 * 30 })
+        gl.util.setCookie({ req, res, name: `${process.env.APP_NAME}_ut`, value: key, days: 30, secure: true })
+
+        console.log('/auth/maxthon success key:', key)
+        res.redirect('https://mail.uu.me/dashboard')
     })
 }
 main()
