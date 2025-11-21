@@ -62,7 +62,6 @@ async function regEndpoints() {
         prefix: '/static/'
     });
     await app.register(fasticookie)
-    await app.register(fasticookie)
 
 
     await app.register(cors, { origin: true, credentials: true, allowedHeaders: ['content-type'] });

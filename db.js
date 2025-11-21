@@ -1,15 +1,13 @@
-import pg from 'pg';
-const { Pool } = pg;
+import pgPromise from 'pg-promise';
 import { BaseService } from './common/baseService.js';
 import { createTables } from './dbInit.js'
-import { nanoid } from 'nanoid';
-import cron from 'node-cron';
 
 export class DB extends BaseService {
   async init(gl) {
     const { logger } = gl;
-    this.pool = null;
     this.isConnected = false;
+    this.pgp = null;
+    this.db = null;
     // 优先使用 connectionString，如果没有则使用分离的配置参数
     const connectionString = process.env.DB_URL;
     if (!connectionString) {
@@ -23,32 +21,19 @@ export class DB extends BaseService {
       idleTimeoutMillis: parseInt(process.env.DB_IDLE_TIMEOUT) || 30000,
       connectionTimeoutMillis: parseInt(process.env.DB_CONNECTION_TIMEOUT) || 2000,
     };
-    console.log(connectionString)
     logger.info('使用连接字符串创建数据库连接池', {
-      connectionString: connectionString.replace(/\/\/[^@]*@/, '//***:***@'), // 隐藏密码
+      connectionString: connectionString.replace(/\/\/[^@]*@/, '//***:***@'),
       poolMax: dbConfig.max
     });
 
-    // 创建连接池
-    this.pool = new Pool(dbConfig);
-
-    // 监听连接池事件
-    this.pool.on('connect', (client) => {
-      logger.debug('新的数据库客户端连接', { processId: client.processID });
+    this.pgp = pgPromise({
+      capSQL: true
     });
+    this.db = this.pgp(connectionString);
 
-    this.pool.on('error', (err, client) => {
-      logger.error('数据库连接池错误', { error: err.message, stack: err.stack });
-    });
-
-    this.pool.on('remove', (client) => {
-      logger.debug('数据库客户端连接移除', { processId: client.processID });
-    });
-
-    // 测试连接
     await this.testConnection();
     this.isConnected = true;
-    logger.info('数据库连接池初始化成功');
+    logger.info('数据库连接初始化成功');
     await createTables(this)
 
     // 定时任务，每6小时运行一次
@@ -58,22 +43,17 @@ export class DB extends BaseService {
     //this.deleteExpiredFilesFromB2();
   }
   async testConnection() {
-    const client = await this.pool.connect();
-    try {
-      const result = await client.query('SELECT NOW() as current_time, version() as version');
-      this.gl.logger.info('数据库连接测试成功', {
-        currentTime: result.rows[0].current_time,
-        version: result.rows[0].version.split(' ')[0]
-      });
-    } finally {
-      client.release();
-    }
+    const result = await this.db.one('SELECT NOW() as current_time, version() as version');
+    this.gl.logger.info('数据库连接测试成功', {
+      currentTime: result.current_time,
+      version: result.version.split(' ')[0]
+    });
   }
   // 执行查询的方法
   async query(text, params) {
     const start = Date.now();
     try {
-      const res = await this.pool.query(text, params);
+      const res = await this.db.result(text, params);
       const duration = Date.now() - start;
       console.log('Executed query', { text, duration, rows: res.rowCount });
       return res;
@@ -82,61 +62,14 @@ export class DB extends BaseService {
       throw error;
     }
   }
-  async tableExists(tableName) {
-    const sql = `
-      SELECT EXISTS (
-        SELECT 1
-        FROM information_schema.tables
-        WHERE table_schema = 'public'
-          AND table_name = $1
-      ) AS exists
-    `;
-    const res = await this.query(sql, [tableName]);
-    return res.rows[0].exists; // true / false
-  }
-  // 获取客户端连接（用于事务）
-  async getClient() {
-    const client = await this.pool.connect();
-    const query = client.query;
-    const release = client.release;
-
-    // 设置超时时间
-    const timeout = setTimeout(() => {
-      console.error('A client has been checked out for more than 5 seconds!');
-      console.error('The last executed query on this client was:', client.lastQuery);
-    }, 5000);
-
-    // 包装查询方法以记录最后执行的查询
-    client.query = (...args) => {
-      client.lastQuery = args;
-      return query.apply(client, args);
-    };
-
-    // 包装释放方法以清除超时
-    client.release = () => {
-      clearTimeout(timeout);
-      client.query = query;
-      client.release = release;
-      return release.apply(client);
-    };
-
-    return client;
-  }
-
   // 事务方法
   async transaction(callback) {
-    const client = await this.getClient();
-    try {
-      await client.query('BEGIN');
-      const result = await callback(client);
-      await client.query('COMMIT');
-      return result;
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    } finally {
-      client.release();
-    }
+    return this.db.tx(async t => {
+      const client = {
+        query: (sql, params) => t.result(sql, params)
+      };
+      return callback(client);
+    });
   }
   /**
     * 执行数据库迁移脚本
@@ -154,8 +87,8 @@ export class DB extends BaseService {
   // 优雅关闭数据库连接
   async close() {
     try {
-      await this.pool.end();
-      console.log('Database connection pool closed');
+      if (this.pgp) this.pgp.end();
+      console.log('Database connections closed');
     } catch (error) {
       console.error('Error closing database:', error);
     }
@@ -243,4 +176,3 @@ export class DB extends BaseService {
   }
 
 }
-
