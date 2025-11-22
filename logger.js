@@ -1,4 +1,5 @@
 import pino from 'pino';
+import { createConsola } from 'consola';
 import fs from 'fs';
 import path from 'path';
 
@@ -9,9 +10,8 @@ export class Logger {
 
         // 确保日志目录存在
         this.ensureLogDir();
-
-        // 创建pino实例
         this.logger = this.createLogger();
+
     }
 
     /**
@@ -47,7 +47,24 @@ export class Logger {
      */
     createLogger() {
         const isDevelopment = process.env.NODE_ENV !== 'production';
-
+        if (isDevelopment) {
+            return createConsola({
+                // 这一行是关键：强制让 consola 调用 console.log/error 等原生方法
+                // 这样 VS Code 的 Debug Console (internalConsole) 就能 100% 捕获，且带有颜色
+                reporters: [
+                    {
+                        log: (logObj) => {
+                            const { type, args } = logObj;
+                            // 映射 consola 的 type 到 console 的方法
+                            const consoleMethod = console[type] || console.log;
+                            // 甚至可以加上简单的颜色处理，或者直接输出
+                            consoleMethod(...args);
+                        },
+                    },
+                ],
+            });
+        }
+        // 创建pino实例
         const baseConfig = {
             name: this.serviceName,
             level: process.env.LOG_LEVEL || 'info',
@@ -61,17 +78,21 @@ export class Logger {
 
         // 开发环境配置
         if (isDevelopment) {
-            return pino({
-                ...baseConfig,
-                transport: {
-                    target: 'pino-pretty',
-                    options: {
-                        colorize: true,
-                        translateTime: 'yyyy-mm-dd HH:MM:ss',
-                        ignore: 'pid,hostname'
+            return pino(
+                {
+                    ...baseConfig,
+                    transport: {
+                        level: 'debug',
+                        target: 'pino-pretty',
+                        options: {
+                            colorize: true,
+                            singleLine: false,
+                            translateTime: 'yyyy-mm-dd HH:MM:ss',
+                            ignore: 'pid,hostname'
+                        }
                     }
-                }
-            });
+                } // <-- 输出到 stderr（VS Code Debug Console 能看到）
+            );
         }
 
         // 生产环境配置
@@ -97,42 +118,42 @@ export class Logger {
     /**
      * Info级别日志
      */
-    info(message, extra = {}) {
-        this.logger.info(extra, message);
+    info(...args) {
+        this.logger.info(...args);
     }
 
     /**
      * Debug级别日志
      */
-    debug(message, extra = {}) {
-        this.logger.debug(extra, message);
+    debug(...args) {
+        this.logger.debug(...args);
     }
 
     /**
      * Warn级别日志
      */
-    warn(message, extra = {}) {
-        this.logger.warn(extra, message);
+    warn(...args) {
+        this.logger.warn(...args);
         // 警告级别也写入错误文件
-        this.writeErrorToFile('warn', message, extra);
+        this.writeErrorToFile('warn', ...args);
     }
 
     /**
      * Error级别日志
      */
-    error(message, extra = {}) {
-        this.logger.error(extra, message);
+    error(...args) {
+        this.logger.error(...args);
         // 错误日志写入文件
-        this.writeErrorToFile('error', message, extra);
+        this.writeErrorToFile('error', ...args);
     }
 
     /**
      * Fatal级别日志
      */
-    fatal(message, extra = {}) {
-        this.logger.fatal(extra, message);
+    fatal(...args) {
+        this.logger.fatal(...args);
         // 致命错误也写入文件
-        this.writeErrorToFile('fatal', message, extra);
+        this.writeErrorToFile('fatal', ...args);
     }
 
     /**
