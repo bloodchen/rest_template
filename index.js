@@ -11,6 +11,8 @@ import { fileURLToPath } from 'url';
 import { Logger } from './logger.js';
 import { Config } from './config.js';
 import { Util } from './common/util.js';
+import { Pay } from './pay.js';
+
 
 dotenv.config({ path: "env" })
 const app = fastifyModule({ logger: false });
@@ -52,6 +54,11 @@ async function main() {
         const { User } = await import('./user.js')
         await User.create(gl)
     }
+    if (process.env.Modules.indexOf("pay") != -1) {
+        await Pay.create(gl)
+    }
+
+
 
     await startServer()
     process.on('SIGINT', onExit);
@@ -68,11 +75,16 @@ async function regEndpoints() {
 
     await app.register(cors, { origin: true, credentials: true, allowedHeaders: ['content-type'] });
     app.addHook("preHandler", async (req, res) => {
+        const { util } = gl
         console.log(req.url)
         if (req.query._testuid) {
             req.uid = Number(req.query._testuid)//req.query.uid
             return
         }
+        const token = util.getCookie({ name: `${process.env.APP_NAME}_ut`, req })
+        if (!token) return
+        const { uid } = await util.decodeToken({ token })
+        if (uid) req.uid = uid
     })
     app.get('/', (req, res) => {
         console.log(req.url)
