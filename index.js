@@ -64,7 +64,15 @@ async function main() {
     process.on('SIGINT', onExit);
     process.on('SIGTERM', onExit);
 }
+async function getRealIP(req, res) {
+    Object.defineProperty(req, 'ip', {
+        get() {
+            return req.headers['cf-connecting-ip'] || req.socket.remoteAddress
+        }
+    })
+}
 async function regEndpoints() {
+    app.addHook('onRequest', getRealIP); //获取真实ip, 在rate-limit之前
 
     await app.register(fastifyStatic, {
         root: path.join(gl.appPath, 'static'),
