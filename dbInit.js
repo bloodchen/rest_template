@@ -100,50 +100,6 @@ export async function createTables(db) {
         `);
         }
 
-        // messages
-        if (!await db.tableExists('messages')) {
-            await db.query(`
-                CREATE TABLE IF NOT EXISTS messages (
-                    mid BIGINT PRIMARY KEY,
-                    cid BIGINT NOT NULL,
-                    uid BIGINT NOT NULL,
-                    pid BIGINT DEFAULT 0,
-                    message JSONB,
-                    tm BIGINT,
-                    ai BOOLEAN DEFAULT FALSE,
-                    model TEXT,
-                    share BOOLEAN DEFAULT FALSE
-                );
-                CREATE INDEX idx_messages_cid ON messages(cid);
-                CREATE INDEX idx_messages_uid ON messages(uid);
-                CREATE INDEX idx_messages_tm ON messages(tm);
-            `);
-        }
-
-        // convs
-        if (!await db.tableExists('convs')) {
-            await db.query(`
-                CREATE TABLE IF NOT EXISTS convs (
-                    cid BIGINT PRIMARY KEY,
-                    uid BIGINT NOT NULL,
-                    name TEXT,
-                    tm BIGINT,
-                    ai BOOLEAN DEFAULT FALSE,
-                    model TEXT
-                );
-                CREATE INDEX idx_convs_uid ON convs(uid);
-            `);
-        }
-
-        // userdata
-        if (!await db.tableExists('userdata')) {
-            await db.query(`
-                CREATE TABLE IF NOT EXISTS userdata (
-                    uid BIGINT PRIMARY KEY,
-                    data JSONB DEFAULT '{}'
-                );
-            `);
-        }
 
         // orders
         if (!await db.tableExists('orders')) {
