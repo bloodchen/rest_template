@@ -272,7 +272,7 @@ export class User extends BaseService {
     return userInfo;
   }
 
-  async getUserInfo(uid) {
+  async getUserInfo({ uid }) {
     const user = await this.getUser({ uid });
     if (!user) {
       return { err: "user-not-found" }
@@ -486,25 +486,78 @@ export class User extends BaseService {
   }
   async handleOrderPaid_fromCommonAPI(meta) {
     const { db } = this.gl
-    const { uid, type, amount, id: order_id } = meta
-    await db.insert('payments', { uid, type, amount, order_id, meta })
-    if (type === 1) return { msg: "ok" }
+    const { uid, type, name, endTime, amount, id: order_id, pid, email, lang = 'en' } = meta
+    try {
+      await db.insert('payments', { uid, type, amount, order_id, meta })
+    } catch (err) { }
     if (!uid) return { err: "no-uid" }
-    return await this.updateUserInfo(uid, { pay: meta })
+    //handle subscription
+    const userinfo = await this.getUserInfo({ uid })
+    let delta = 0
+    if (userinfo?.pay) {
+      const { amount: oldAmount = 0, endTime = 0, name: oldName = '' } = userinfo?.pay
+      const newName = meta?.name || ''
+      let { amount: newAmount = 0 } = meta
+      if (newAmount === 0) {
+        newAmount = +(meta.price?.split('|')[0]) || 0
+      }
+
+      // 当前剩余秒数（endTime 为旧周期的结束时间）
+      const remainingSec = Math.max(0, (endTime * 1000 - Date.now()) / 1000)
+
+      // 推断周期秒数：优先用名称包含的 Monthly/Yearly，其次用价格标签 |M |Y
+      const monthSec = 30 * 24 * 60 * 60
+      const yearSec = 365 * 24 * 60 * 60
+      const inferCycleSec = (nameStr, priceTag) => {
+        const lower = (nameStr || '').toLowerCase()
+        if (lower.includes('year')) return yearSec
+        if (lower.includes('month')) return monthSec
+        const tag = (priceTag || '').split('|')[1]?.trim()?.toLowerCase()
+        if (tag === 'y') return yearSec
+        if (tag === 'm') return monthSec
+        return monthSec
+      }
+      const oldCycleSec = inferCycleSec(oldName)
+      const newCycleSec = inferCycleSec(newName, meta?.price)
+
+      // 将剩余服务价值按新价格（每秒单价）换算成时间（秒）
+      if (remainingSec > 0 && oldAmount > 0 && newAmount > 0) {
+        const oldRatePerSec = oldAmount / oldCycleSec
+        const newRatePerSec = newAmount / newCycleSec
+        delta = Math.floor(remainingSec * (oldRatePerSec / newRatePerSec))
+      } else {
+        delta = 0
+      }
+      console.log("plan-change-delta:", delta)
+    }
+    return await this.updateUserInfo(uid, { pay: meta, delta })
   }
 
   async getPlan({ user, uid }) {
     if (!user) user = await this.getUser({ uid })
-    if (!user?.info?.pay) return "free"
-    const { name, endTime } = user?.info?.pay
-    if (endTime * 1000 < Date.now()) return 'free'
-    if (name === 'Plus Plan Monthly' || name === 'Plus Plan Yearly') {
-      return 'plus'
+    if (!user?.info?.pay) return { name: 'free' }
+    let { name, endTime } = user?.info?.pay
+    if (endTime * 1000 < Date.now()) return { name: 'free' }
+    const delta = +user?.info?.delta || 0
+    if (!name) name = user?.info?.pay.product
+    name = name.toLowerCase()
+    if (name.indexOf('basic') > -1) {
+      return { name: 'basic', endTime: endTime + delta }
     }
-    if (name === 'Ultra Plan Monthly' || name === 'Ultra Plan Yearly') {
-      return 'ultra'
+    if (name.indexOf('pro') > -1) {
+      return { name: 'pro', endTime: endTime + delta }
     }
-    return 'free'
+    if (name.indexOf('basic') > -1) {
+      return { name: 'basic', endTime: endTime + delta }
+    }
+    if (name.indexOf('plus') > -1) {
+      return { name: 'plus', endTime: endTime + delta }
+    }
+    if (name.indexOf('ultra') > -1) {
+      return { name: 'ultra', endTime: endTime + delta }
+    }
+
+    return { name: 'free' }
   }
 
 
