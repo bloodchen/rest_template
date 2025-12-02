@@ -150,7 +150,28 @@ export class User extends BaseService {
     const { pass, ...userInfo } = newUser;
     return userInfo;
   }
+  async handleOTT({ OTT, uid }) {
+    const { db, util } = this.gl
+    const OTTStr = await db.getKV(OTT)
+    if (!OTTStr) return null
+    const OTTObj = JSON.parse(OTTStr)
+    //await db.delKV(OTT)
+    if (!OTTObj) return null
+    const { type, email, picture, avatar_url } = OTTObj
+    let user = {}
 
+    if (type === 'google') {
+      user = await this.ensureUser({ email, frm: 1, uid, info: { avatar: picture } })
+    }
+    if (type === 'maxthon') {
+      if (!email) email = 'non-exist@non-exist.ooo'
+      user = await this.ensureUser({ email, frm: 2, uid, info: { avatar: avatar_url } })
+    }
+    if (type === 'email') {
+      user = await this.ensureUser({ email, frm: 3, uid, info: {} })
+    }
+    return user
+  }
   /**
    * 用户登录验证
    * @param {string} email - 邮箱
@@ -158,17 +179,11 @@ export class User extends BaseService {
    * @param {string} OTT - one time login code
    * @returns {Promise<Object|null>} 用户信息或null
    */
-  async authenticateUser({ OTT, email, password }) {
+  async authenticateUser({ email, password }) {
     if (!OTT && (!email || !password)) {
       throw new Error('邮箱和密码不能为空');
     }
     let verifyPass = true
-    if (OTT) {
-      const { redis } = this.gl
-      email = await redis.$r.get(OTT)
-      await redis.$r.del(OTT)
-      verifyPass = false
-    }
     const user = await this.gl.db.findOne(
       'SELECT * FROM users WHERE email = $1 AND status = 1',
       [email]
@@ -584,13 +599,13 @@ export class User extends BaseService {
       try {
         const { util } = this.gl
         const { OTT, email, password } = req.body;
-        const user = await this.authenticateUser({ OTT, email, password });
+        const user = OTT ? await this.handleOTT({ OTT, uid: req.uid }) : await this.authenticateUser({ email, password });
 
         if (!user) {
           return { err: 'invalid-email-or-password' };
         }
-        const token = await util.uidToToken({ uid: user.uid, create: Date.now(), expire: Date.now() + 3600 * 24 * 30 })
-        util.setCookie({ req, res, name: `${process.env.APP_NAME}_ut`, value: token, days: 30, secure: true })
+        const token = await util.uidToToken({ uid: user.uid, create: Date.now(), expire: Date.now() + 1000 * 3600 * 24 * 30 })
+        util.setCookie({ req, res, name: `${this.pname}_ut`, value: token, days: 30, secure: true })
 
         return { result: user };
       } catch (error) {
