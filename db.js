@@ -121,26 +121,67 @@ export class DB extends BaseService {
   }
 
   // KV Store Methods
-  async setKV(key, value, ttl) {
-    const expire = Date.now() + ttl * 1000;
-    const query = `
+  async setKV(key, value, options) {
+    const ttl = typeof options === 'number' ? options : options?.ex;
+    const nx = !!options?.nx;
+
+    const now = Date.now();
+    const hasTTL = ttl !== undefined && ttl !== null;
+    const expire = hasTTL ? (now + Math.max(0, ttl) * 1000) : 0;
+
+    const query = nx
+      ? `
+      INSERT INTO kv (key, value, expire)
+      VALUES ($1, $2, $3)
+      ON CONFLICT (key) DO UPDATE
+      SET value = EXCLUDED.value,
+          expire = EXCLUDED.expire
+      WHERE kv.expire <> 0 AND kv.expire < $4
+      `
+      : `
       INSERT INTO kv (key, value, expire)
       VALUES ($1, $2, $3)
       ON CONFLICT (key) DO UPDATE SET
         value = EXCLUDED.value,
         expire = EXCLUDED.expire
-    `;
-    await this.db.none(query, [key, { v: value }, expire]);
+      `;
+
+    // 如果你不需要 {v:...} 建议直接 value
+    await this.db.none(query, [key, value, expire, now]);
   }
 
-  async getKV(key) {
-    const res = await this.db.oneOrNone('SELECT value, expire FROM kv WHERE key = $1', [key]);
-    if (!res) return null;
-    if (res.expire < Date.now()) {
-      await this.delKV(key);
+  // 约定：kv.value 存的是原始 value（建议），如果你仍存 {v:value}，看下面注释
+  async getKV(key, { withTTL = false, cleanupExpired = true } = {}) {
+    const now = Date.now();
+
+    // 先查一把（把 expire 一起取出来，方便判断/算ttl）
+    const row = await this.db.oneOrNone(
+      `SELECT value, expire
+     FROM kv
+     WHERE key = $1`,
+      [key]
+    );
+
+    if (!row) return null;
+
+    const { value, expire } = row;
+
+    // 已过期
+    if (expire !== 0 && expire <= now) {
+      if (cleanupExpired) {
+        await this.db.none(`DELETE FROM kv WHERE key = $1 AND expire <> 0 AND expire <= $2`, [key, now]);
+      }
       return null;
     }
-    return res.value.v;
+
+    // 如果你之前存的是 {v: value}，那这里改成：
+    // const realValue = value?.v;
+    const realValue = value;
+
+    if (!withTTL) return realValue;
+
+    const ttlSec = expire === 0 ? -1 : Math.max(0, Math.ceil((expire - now) / 1000)); // -1 表示永久
+    return { value: realValue, ttlSec };
   }
 
   async delKV(key) {

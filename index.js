@@ -123,18 +123,18 @@ async function regEndpoints() {
         return "ok"
     })
     app.get('/start/maxthon', async (req, res) => { //support auto login from maxthon
-        const { access_token } = req.query
+        const { access_token, g_url, l_url } = req.query
         const { user_id: uid, email } = (await axios.get(`https://api.maxthon.com/util/_getUserByAccessToken?access_token=${access_token}`))?.data
         if (!uid) {
-            res.redirect('https://mail.uu.me/')
+            res.redirect(g_url ? g_url : `https://${process.env.APP_NAME}.com/`)
             return
         }
-        const user = await gl.user.ensureUser({ uid, email })
+        const user = await gl.user.ensureUser({ email, frm: 2 })
         const key = await gl.util.uidToToken({ uid: user.uid, create: Date.now(), expire: Date.now() + 1000 * 3600 * 24 * 30 })
         gl.util.setCookie({ req, res, name: `${process.env.APP_NAME}_ut`, value: key, days: 30, secure: true })
 
         console.log('/auth/maxthon success key:', key)
-        res.redirect('https://mail.uu.me/dashboard')
+        res.redirect(l_url ? l_url : `https://${process.env.APP_NAME}.com/dashboard`)
     })
 }
 main()

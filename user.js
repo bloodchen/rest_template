@@ -480,23 +480,34 @@ export class User extends BaseService {
     return newUser;
   }
 
+  async handleOTT({ OTT, uid }) {
+    const { db, util } = this.gl
+    const OTTStr = await db.getKV(OTT)
+    if (!OTTStr) return null
+    const OTTObj = JSON.parse(OTTStr)
+    //await db.delKV(OTT)
+    if (!OTTObj) return null
+    let { type, email, account, picture, avatar_url } = OTTObj
+    let user = {}
 
-  async handleLoginSuccessful_fromCommonAPI({ OTT, ...rest }) {
-    const { redis } = this.gl
-    console.log("handleLoginSuccessful_fromCommonAPI", OTT, rest)
-    if (!OTT) return { code: 100, err: "no-ott" }
-    const { type, email, picture, avatar_url } = rest
     if (type === 'google') {
-      await this.ensureUser({ email, frm: 1, info: { avatar: picture } })
+      user = await this.ensureUser({ email, frm: 1, uid, info: { avatar: picture } })
     }
     if (type === 'maxthon') {
-      if (!email) email = 'non-exist@non-exist.ooo'
-      await this.ensureUser({ email, frm: 2, info: { avatar: avatar_url } })
+      if (account.indexOf('@') !== -1) email = account
+      if (!email || email.indexOf('@') === -1) email = 'non-exist@non-exist.ooo'
+      user = await this.ensureUser({ email, frm: 2, uid, info: { avatar: avatar_url } })
     }
     if (type === 'email') {
-      await this.ensureUser({ email, frm: 3, info: {} })
+      user = await this.ensureUser({ email, frm: 3, uid, info: {} })
     }
-    redis.$r.set(OTT, email, 'EX', 60 * 5)
+    return user
+  }
+  async handleLoginSuccessful_fromCommonAPI({ OTT, ...rest }) {
+    console.log("handleLoginSuccessful_fromCommonAPI", OTT, rest)
+    if (!OTT) return { code: 100, err: "no-ott" }
+    const { db } = this.gl
+    await db.setKV(OTT, JSON.stringify(rest), 60 * 5) // 5 minutes
     return { msg: "ok" }
   }
   async handleOrderPaid_fromCommonAPI(meta) {
@@ -574,7 +585,89 @@ export class User extends BaseService {
 
     return { name: 'free' }
   }
+  /**
+   * 更新用户最后活跃时间
+   * @param {number} uid - 用户ID
+   * @returns {Promise<boolean>} 是否更新成功
+   */
+  async updateActive({ uid }) {
+    if (!uid) {
+      throw new Error('用户ID不能为空');
+    }
+    const { db } = this.gl;
+    const cacheKey = `active_at_${uid}`;
 
+    // 检查缓存，如果10分钟内已经更新过，则忽略
+    const lastActive = await db.getKV(cacheKey);
+    if (lastActive) return true;
+
+    // 1) 记录“今天活跃过”（一人一天一条）
+    await db.query(`
+    INSERT INTO user_daily_activity (uid, activity_date)
+    VALUES ($1, CURRENT_DATE)
+    ON CONFLICT (uid, activity_date) DO NOTHING;
+  `, [uid]);
+
+    // 2) 更新用户最后活跃时间
+    const result = await db.query(`
+      INSERT INTO user_metrics (uid, last_active_at)
+      VALUES ($1, NOW())
+      ON CONFLICT (uid) DO UPDATE SET last_active_at = EXCLUDED.last_active_at
+      RETURNING *
+    `, [uid]);
+
+    if (result.rowCount > 0) {
+      // 设置10分钟缓存
+      await db.setKV(cacheKey, '1', 600);
+      return true;
+    }
+    return false;
+  }
+  /**
+   * 每日处理逻辑
+   */
+  async dailyProcess() {
+    const { db, logger } = this.gl;
+
+    await db.query(`
+      -- (0) 可选：删除历史数据（每天一次）
+DELETE FROM user_daily_activity
+WHERE activity_date < CURRENT_DATE - 90;
+
+-- (1) 更新 active_days_30（聚合后 join）
+WITH c AS (
+  SELECT uid, COUNT(*) AS active_days_30
+  FROM user_daily_activity
+  WHERE activity_date >= CURRENT_DATE - 29
+  GROUP BY uid
+)
+UPDATE user_metrics m
+SET active_days_30 = COALESCE(c.active_days_30, 0)
+FROM c
+WHERE m.uid = c.uid;
+
+-- 把没出现在 c 的用户置 0（如果你希望永远是数字）
+UPDATE user_metrics
+SET active_days_30 = 0
+WHERE uid NOT IN (
+  SELECT uid
+  FROM user_daily_activity
+  WHERE activity_date >= CURRENT_DATE - 29
+  GROUP BY uid
+);
+
+-- (2) 更新 activity_status（全量即可）
+UPDATE user_metrics
+SET activity_status = CASE
+  WHEN last_active_at >= NOW() - INTERVAL '7 days'  THEN 'active'
+  WHEN last_active_at >= NOW() - INTERVAL '30 days' THEN 'inactive_7_30'
+  ELSE 'churned_30_plus'
+END;
+    `);
+
+
+    logger.info('每日处理逻辑执行完毕');
+  }
 
   /**
    * 注册用户管理相关的API端点
@@ -599,7 +692,7 @@ export class User extends BaseService {
       try {
         const { util } = this.gl
         const { OTT, email, password } = req.body;
-        const user = OTT ? await this.handleOTT({ OTT, uid: req.uid }) : await this.authenticateUser({ email, password });
+        const user = OTT ? await this.handleOTT({ OTT }) : await this.authenticateUser({ email, password });
 
         if (!user) {
           return { err: 'invalid-email-or-password' };
@@ -758,6 +851,15 @@ export class User extends BaseService {
         return { err: 'internal-server-error' };
       }
     });
-
+    // 每日处理逻辑
+    app.get('/user/dailyProcess', async (req, res) => {
+      try {
+        await this.dailyProcess();
+        return { result: '每日处理逻辑执行成功' };
+      } catch (error) {
+        this.gl.logger.error('每日处理逻辑执行失败', { error: error.message });
+        return { err: 'internal-server-error' };
+      }
+    });
   }
 }

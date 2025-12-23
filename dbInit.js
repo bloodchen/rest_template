@@ -121,11 +121,49 @@ export async function createTables(db) {
         if (!await db.tableExists('kv')) {
             await db.query(`
                 CREATE UNLOGGED TABLE IF NOT EXISTS kv (
-                    key TEXT PRIMARY KEY,
-                    value JSONB,
-                    expire BIGINT
+                    key    TEXT PRIMARY KEY,
+                    value  JSONB NOT NULL,
+                    expire BIGINT NOT NULL DEFAULT 0
                 );
-                CREATE INDEX IF NOT EXISTS idx_kv_expire ON kv(expire);
+
+                -- 用部分索引：只索引“会过期”的行，清理扫描更快
+                CREATE INDEX IF NOT EXISTS idx_kv_expire_due
+                    ON kv (expire)
+                    WHERE expire <> 0;
+            `);
+        }
+
+        // user_metrics
+        if (!await db.tableExists('user_metrics')) {
+            await db.query(`
+                CREATE TABLE IF NOT EXISTS user_metrics (
+                    uid BIGINT PRIMARY KEY REFERENCES users(uid) ON DELETE CASCADE,
+                    last_active_at TIMESTAMPTZ,
+                    activity_status TEXT,
+                    active_days_30  INTEGER NOT NULL DEFAULT 0,
+                    reactivation_7d_sent_at TIMESTAMPTZ,
+                    reactivation_14d_sent_at TIMESTAMPTZ,
+                    reactivation_30d_sent_at TIMESTAMPTZ,
+                    last_marketing_email_at TIMESTAMPTZ
+                );
+                CREATE INDEX IF NOT EXISTS idx_user_metrics_last_active_at ON user_metrics(last_active_at);
+                CREATE INDEX IF NOT EXISTS idx_user_metrics_activity_status ON user_metrics(activity_status);
+                CREATE INDEX IF NOT EXISTS idx_user_metrics_reactivation_7d_sent_at ON user_metrics(reactivation_7d_sent_at);
+                CREATE INDEX IF NOT EXISTS idx_user_metrics_reactivation_14d_sent_at ON user_metrics(reactivation_14d_sent_at);
+                CREATE INDEX IF NOT EXISTS idx_user_metrics_reactivation_30d_sent_at ON user_metrics(reactivation_30d_sent_at);
+                CREATE INDEX IF NOT EXISTS idx_user_metrics_last_marketing_email_at ON user_metrics(last_marketing_email_at);
+            `);
+        }
+
+        // user_daily_activity
+        if (!await db.tableExists('user_daily_activity')) {
+            await db.query(`
+                CREATE TABLE IF NOT EXISTS user_daily_activity (
+                  uid BIGINT NOT NULL,
+                  activity_date DATE NOT NULL,
+                  PRIMARY KEY (uid, activity_date)
+                );
+                CREATE INDEX IF NOT EXISTS idx_user_daily_activity_date ON user_daily_activity(activity_date);
             `);
         }
         console.log('✅ Tables created.');
